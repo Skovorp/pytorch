@@ -1909,12 +1909,18 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                             "The grad inputs should be same number as forward output tangents"
                         )
 
+                    _num_mutated_inp_runtime = (
+                        CompiledFunction.metadata.num_mutated_inp_runtime_indices
+                    )
+
                     flat_processed_tangents = list(
                         itertools.chain.from_iterable(
-                            AOTDispatchAutograd.process_runtime_tangent(
-                                t,
-                                m,
-                            )[1]
+                            (
+                                AOTDispatchAutograd.process_runtime_tangent(
+                                    t,
+                                    m,
+                                )[1]
+                            )
                             for t, m in zip(
                                 tangents,
                                 CompiledFunction.metadata.subclass_tangent_meta,

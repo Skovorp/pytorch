@@ -218,16 +218,6 @@ def run_functionalized_fw_and_collect_metadata(
             # tensors. This is a problem as the inner tensor stride change may not be reflected
             # correctly in the outer tensor, so disallow this for now.
             mutates_data = has_data_mutation(f_arg)
-            if (
-                mutates_data
-                and not arg.is_contiguous()
-                and is_traceable_wrapper_subclass(arg)
-            ):
-                raise RuntimeError(
-                    "Mutations on non-contiguous inputs are currently not allowed on "
-                    "tensor subclasses"
-                )
-
             mutates_metadata = has_metadata_mutation(
                 f_arg, arg, check_only_storage_mutation=False
             )
@@ -671,8 +661,29 @@ from a multi-output view call"
         # This analysis function returns *only* the outputs that are meant to be tangents to the backwards.
         # Anything that aliases (inputs returned in the fw due to metadata mutations, or outputs that alias inputs/intermediates)
         # are *regenerated* later, and not used directly in the autograd graph
+        def _plain_fake_tensor_like_subclass(x):
+            with detect_fake_mode():
+                return torch.empty(
+                    x.shape, dtype=x.dtype, device=x.device, layout=x.layout
+                )
+
         f_input_tangents = [
-            inp
+            # Generally when creating tangents to trace with, we assume that tangents will have
+            # the same subclass-ness as their forward outs
+            # however: for tangents that correspond to input mutations, in practice it is more likely
+            # that these tangents will be plain tensors of zeros at runtime, so we tweak our guess
+            # to assume that the these tangents should always be plaint tensors.
+            # Example:
+            #  def f(x):
+            #      x.mul_(2)
+            #      return x + 1
+            #  out = f(x)
+            #  out.sum().backward()
+            # In the above code, we will have a tangent "x_updated_tangent",
+            # which will be a plain tensor of zeros, *unless* x is used in some compute after executing f
+            _plain_fake_tensor_like_subclass(inp)
+            if is_traceable_wrapper_subclass(inp)
+            else inp
             for inp, info in zip(flat_f_args, input_info)
             if info.mutation_type == MutationType.MUTATED_OUT_GRAPH
             and info.mutates_data
