@@ -7,7 +7,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from types import MethodType
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
+from typing import Any, List, Optional, TYPE_CHECKING, Union
 
 import pytest
 from _pytest.config import Config, filename_arg
@@ -352,23 +352,15 @@ class StepcurrentPlugin:
         self.cache_info_init_path = f"{directory}/init"
         self.cache_info_active_path = f"{directory}/active"
 
-        self.cache_info_init: Optional[Dict[str, Any]] = self.cache.get(
-            self.cache_info_init_path, None
+        init_cache = self.cache.get(self.cache_info_init_path, None)
+        active_cache = self.cache.get(self.cache_info_active_path, None)
+        self.prev_run = init_cache["prev_run"] if init_cache else []
+        self.to_run = init_cache["to_run"] if init_cache else []
+        self.already_ran = init_cache["already_ran"] if init_cache else []
+        self.end_at = active_cache["ended_at"] if active_cache else None
+        self.pytest_previous_status = (
+            active_cache["pytest_previous_status"] if active_cache else None
         )
-        self.cache_info_active: Optional[Dict[str, Any]] = self.cache.get(
-            self.cache_info_active_path, None
-        )
-        if self.cache_info_init is None:
-            self.cache_info_init = {
-                "prev_run": [],
-                "to_run": [],
-                "already_ran": [],
-            }
-        if self.cache_info_active is None:
-            self.cache_info_active = {
-                "pytest_previous_status": None,
-                "ended_at": None,
-            }
 
     def get_index(self, nodeid: str, items) -> int:
         for index, item in enumerate(items):
@@ -378,29 +370,28 @@ class StepcurrentPlugin:
 
     @pytest.hookimpl(trylast=True)
     def pytest_collection_modifyitems(self, config: Config, items: List[Any]) -> None:
-        if self.cache_info_active["pytest_previous_status"] is None:
+        if self.pytest_previous_status is None:
             # This is the first run, so we don't need to do anything
             self.report_status += "First run, starting from the beginning"
             # Special case of the status == "cont" below where everything is cont
             for item in items:
-                self.cache_info_init["prev_run"].append([item.nodeid, "cont"])
-                self.cache_info_init["to_run"].append([item.nodeid, "cont"])
-            self.cache_info_active["pytest_previous_status"] = "no xml"
-            self.save_cache_init()
-            self.save_cache_active()
+                self.prev_run.append([item.nodeid, "cont"])
+                self.to_run.append([item.nodeid, "cont"])
+            self.pytest_previous_status = "no xml"
+            self.save_cache()
             return
         # validate that the cache is correct
         for item, test in zip(
             items,
-            self.cache_info_init["already_ran"] + self.cache_info_init["to_run"],
+            self.already_ran + self.to_run,
         ):
             assert (
                 item.nodeid == test[0]
             ), f"Cache and discovered tests do not match, {item.nodeid} != {test[0]}"
 
-        first_test, status = self.cache_info_init["to_run"][0]
+        first_test, status = self.to_run[0]
         first_index = self.get_index(first_test, items)
-        self.cache_info_init["prev_run"] = []
+        self.prev_run = []
         deselected = []
 
         if status == "cont":
@@ -409,28 +400,23 @@ class StepcurrentPlugin:
             items[:] = items[first_index:]
             self.report_status += f"Continuing from {first_test}"
             i, test = next(
-                (
-                    (i, t)
-                    for i, t in enumerate(self.cache_info_init["to_run"])
-                    if t[1] != "cont"
-                ),
-                (len(self.cache_info_init["to_run"]), None),
+                ((i, t) for i, t in enumerate(self.to_run) if t[1] != "cont"),
+                (len(self.to_run), None),
             )
             deselected += items[i:]
             items[:] = items[:i]
             if test is not None:
                 self.report_status += f", stopping at {test[0]} (exclusive)"
-            self.cache_info_init["prev_run"] = self.cache_info_init["to_run"][:i]
+            self.prev_run = self.to_run[:i]
         else:
             # Run single test
             deselected = items[:first_index] + items[first_index + 1 :]
             items[:] = items[first_index : first_index + 1]
-            self.cache_info_init["prev_run"] = [[first_test, status]]
+            self.prev_run = [[first_test, status]]
             self.report_status += f"Running single test {first_test}"
 
-        self.cache_info_active["pytest_previous_status"] = "no xml"
-        self.save_cache_init()
-        self.save_cache_active()
+        self.pytest_previous_status = "no xml"
+        self.save_cache()
         config.hook.pytest_deselected(items=deselected)
 
     def pytest_report_collectionfinish(self) -> Optional[str]:
@@ -439,18 +425,30 @@ class StepcurrentPlugin:
         return None
 
     def pytest_runtest_protocol(self, item, nextitem) -> None:
-        self.cache_info_active["ended_at"] = item.nodeid
+        self.ended_at = item.nodeid
         self.save_cache_active()
 
-    def save_cache_init(self) -> None:
-        self.cache.set(self.cache_info_init_path, self.cache_info_init)
+    def save_cache(self) -> None:
+        self.cache.set(
+            self.cache_info_init_path,
+            {
+                "prev_run": self.prev_run,
+                "to_run": self.to_run,
+                "already_ran": self.already_ran,
+            },
+        )
+        self.save_cache_active()
 
     def save_cache_active(self) -> None:
-        self.cache.set(self.cache_info_active_path, self.cache_info_active)
+        self.cache.set(
+            self.cache_info_active_path,
+            {
+                "ended_at": self.ended_at,
+                "pytest_previous_status": self.pytest_previous_status,
+            },
+        )
 
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session, exitstatus):
-        self.cache_info_active["pytest_previous_status"] = (
-            0 if exitstatus == 5 else exitstatus
-        )
+        self.pytest_previous_status = 0 if exitstatus == 5 else exitstatus
         self.save_cache_active()
