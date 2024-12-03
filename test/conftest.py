@@ -386,6 +386,8 @@ class StepcurrentPlugin:
                 self.cache_info_init["prev_run"].append([item.nodeid, "cont"])
                 self.cache_info_init["to_run"].append([item.nodeid, "cont"])
             self.cache_info_active["pytest_previous_status"] = "no xml"
+            self.save_cache_init()
+            self.save_cache_active()
             return
         # validate that the cache is correct
         for item, test in zip(
