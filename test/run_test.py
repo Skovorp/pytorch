@@ -977,6 +977,21 @@ def run_test_retries(
     step_current_file = (
         REPO_ROOT / ".pytest_cache/v/cache/stepcurrent" / stepcurrent_key
     )
+
+    def save_cache(cache):
+        def _save_keys(keys, file):
+            with open(f"{step_current_file}/{file}", "w") as f:
+                json.dump({k: v for k, v in cache.items() if k in keys}, f, indent=2)
+
+        _save_keys(["to_run", "prev_run", "already_ran"], "init")
+        _save_keys(["ended_at", "pytest_previous_status"], "active")
+
+    def load_cache():
+        with open(f"{step_current_file}/init") as f:
+            cache = json.load(f)
+        with open(f"{step_current_file}/active") as f:
+            return {**cache, **json.load(f)}
+
     while True:
         start = time.time()
         test_report_path = get_test_report_path()
@@ -995,8 +1010,7 @@ def run_test_retries(
         print_to_file(f"Got exit code {ret_code}{signal_name}")
         # Read what was previously run
         try:
-            with open(step_current_file) as f:
-                cache = json.load(f)
+            cache = load_cache()
         except FileNotFoundError:
             print_to_file(
                 "No stepcurrent file found. Either pytest didn't run"
@@ -1077,24 +1091,21 @@ def run_test_retries(
             cache["already_ran"].append(cache["to_run"][0])
             cache["to_run"] = cache["to_run"][1:]
             if not continue_through_error:
-                with open(step_current_file, "w") as f:
-                    json.dump(cache, f, indent=2)
+                save_cache(cache)
                 print_to_file("Stopping at first consistent failure")
                 break
             print_to_file(
                 "Test failed consistently, "
                 "continuing with the rest of the tests due to continue-through-error being set"
             )
-        with open(step_current_file, "w") as f:
-            json.dump(cache, f, indent=2)
+        save_cache(cache)
         if len(cache["to_run"]) == 0:
             break
         if cache["to_run"][0][1] != "cont":
             env = try_set_cpp_stack_traces(env, command, set=True)
         print_items = []  # do not continue printing them, massive waste of space
 
-    with open(step_current_file) as f:
-        cache = json.load(f)
+    cache = load_cache()
     consistent_failures = [x[0] for x in cache["already_ran"] if x[1] == "failed"]
     flaky_failures = [
         x[0] for x in cache["already_ran"] if x[1] not in ("failed", "cont", "s")
