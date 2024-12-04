@@ -8835,7 +8835,6 @@ class CommonTemplate:
         result = fn(torch.randn([1, 2, 16, 4]).requires_grad_())
         result.sum().backward()
 
-    @skip_if_cpp_wrapper("fails due to two-pass GPU codegen")
     def test_dropout2(self):
         n = 100000
         weight = torch.ones(
@@ -8895,7 +8894,6 @@ class CommonTemplate:
         self.assertTrue(same(g2, g3))
 
     @config.patch(search_autotune_cache=False)
-    @skip_if_cpp_wrapper("fails due to two-pass GPU codegen")
     def test_dropout3(self):
         m = torch.nn.Sequential(
             torch.nn.Linear(32, 32, bias=False),
@@ -8935,11 +8933,8 @@ class CommonTemplate:
 
         _, source_codes = run_and_get_code(fn1)
         # cpp_wrapper does a 2-pass generation on GPU.
-        self.assertEqual(len(source_codes), 1 if not config.cpp_wrapper else 2)
+        self.assertEqual(len(source_codes), 1)
         self.assertEqual(source_codes[0].count("async_compile.triton"), 2)
-        if config.cpp_wrapper:
-            # The second pass should not involve triton at all.
-            self.assertEqual(source_codes[1].count("async_compile.triton"), 0)
 
     def test_roll(self):
         def fn(a):
@@ -12359,7 +12354,6 @@ if HAS_GPU and not TEST_WITH_ASAN:
             self.assertFalse("out_ptr0" in code)
             self.assertEqual(fn_opt(*inps), fn(*inps))
 
-        @skip_if_cpp_wrapper("fails due to two-pass GPU codegen")
         def test_numpy_on_gpu(self):
             x = np.arange(10, dtype=np.float32)
 
@@ -12804,7 +12798,6 @@ if HAS_GPU and not TEST_WITH_ASAN:
 
         @patch("torch._inductor.config.comment_origin", True)
         @patch("torch._functorch.config.max_dist_from_bw", 0)
-        @skip_if_cpp_wrapper("fails due to two-pass GPU codegen")
         def test_inductor_sequence_nr(self):
             class Model(torch.nn.Module):
                 def __init__(self) -> None:
@@ -12930,7 +12923,6 @@ if HAS_GPU and not TEST_WITH_ASAN:
 
                 print(p.key_averages().table(max_name_column_width=200))
 
-        @skip_if_cpp_wrapper("fails due to two-pass GPU codegen")
         def test_non_blocking_copy_codegen(self):
             # Checks non_blocking arg is present in codegen
             # (see https://github.com/pytorch/pytorch/issues/136260)
@@ -12999,13 +12991,7 @@ if HAS_GPU and not TEST_WITH_ASAN:
                 return fn_opt(inp, weight).sum().backward()
 
             _, code = run_and_get_code(wrapper, inp, weight)
-
-            if config.cpp_wrapper:
-                # when using cpp_wrapper, backward triton code is in code[2]
-                self.assertTrue("in_out_ptr" in code[2])
-            else:
-                # when not using cpp_wrapper, backward triton code is in code[1]
-                self.assertTrue("in_out_ptr" in code[1])
+            self.assertTrue("in_out_ptr" in code[1])
 
     class RNNTest(TestCase):
         device_type = GPU_TYPE
@@ -13037,11 +13023,10 @@ if HAS_GPU and not TEST_WITH_ASAN:
             actual, code = run_and_get_code(torch.compile(f), x)
             self.assertTrue(torch.allclose(ref, actual))
 
-            if config.cpp_wrapper:
-                code_cpp = code[1]
-                self.assertIn("aoti_torch_check_inf_and_nan", code_cpp)
-
             code = code[0]
+            if config.cpp_wrapper:
+                self.assertIn("aoti_torch_check_inf_and_nan", code)
+
             self.assertIn("# make sure graph inputs are not nan/inf", code)
             self.assertRegex(code, r"assert not .*\.isnan\(\)\.any\(\).item\(\)")
             self.assertRegex(code, r"assert not .*\.isinf\(\)\.any\(\).item\(\)")
